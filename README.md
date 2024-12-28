@@ -6,7 +6,7 @@ Go version of [komootgpx](https://github.com/mfkd/komootgpx).
 
 ## Installation
 
-```shell
+```sh
 go install github.com/mfkd/gokomoot@latest
 ```
 
@@ -14,6 +14,6 @@ go install github.com/mfkd/gokomoot@latest
 
 Create a GPX file from a Komoot tour link:
 
-```shell
+```sh
 gokomoot -o route.gpx https://www.komoot.com/smarttour/33303609
 ```
