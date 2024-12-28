@@ -93,16 +93,16 @@ type KomootResponse struct {
 	} `json:"page"`
 }
 
-// Converter handles the conversion process
-type Converter struct {
+// GPXConverter handles the conversion process
+type GPXConverter struct {
 	config Configuration
 	client *http.Client
 	logger *log.Logger
 }
 
-// NewConverter creates a new Converter instance
-func NewConverter(config Configuration) *Converter {
-	return &Converter{
+// NewGPXConverter creates a new GPXConverter instance
+func NewGPXConverter(config Configuration) *GPXConverter {
+	return &GPXConverter{
 		config: config,
 		client: &http.Client{
 			Timeout: config.HTTPTimeout,
@@ -112,7 +112,7 @@ func NewConverter(config Configuration) *Converter {
 }
 
 // makeHTTPRequest makes an HTTP GET request with retries
-func (c *Converter) makeHTTPRequest(ctx context.Context, url string) (string, error) {
+func (c *GPXConverter) makeHTTPRequest(ctx context.Context, url string) (string, error) {
 	var lastError error
 
 	for attempt := 0; attempt < c.config.MaxRetries; attempt++ {
@@ -154,7 +154,7 @@ func (c *Converter) makeHTTPRequest(ctx context.Context, url string) (string, er
 }
 
 // extractJSONFromHTML extracts JSON data embedded in the HTML content
-func (c *Converter) extractJSONFromHTML(htmlContent string) ([]byte, error) {
+func (c *GPXConverter) extractJSONFromHTML(htmlContent string) ([]byte, error) {
 	startMarker := `kmtBoot.setProps("`
 	endMarker := `");`
 
@@ -177,8 +177,8 @@ func (c *Converter) extractJSONFromHTML(htmlContent string) ([]byte, error) {
 	return []byte(jsonStr), nil
 }
 
-// GenerateGPXFromKomoot performs the complete conversion process
-func (c *Converter) GenerateGPXFromKomoot(ctx context.Context, url, outputPath string) error {
+// ConvertKomootToGPX performs the complete conversion process
+func (c *GPXConverter) ConvertKomootToGPX(ctx context.Context, url, outputPath string) error {
 	// Download and process the tour data
 	c.logger.Printf("Downloading tour data from %s\n", url)
 	html, err := c.makeHTTPRequest(ctx, url)
@@ -211,7 +211,7 @@ func (c *Converter) GenerateGPXFromKomoot(ctx context.Context, url, outputPath s
 }
 
 // jsonToGPX converts JSON data to GPX format
-func (c *Converter) jsonToGPX(data *KomootResponse) (*GPX, error) {
+func (c *GPXConverter) jsonToGPX(data *KomootResponse) (*GPX, error) {
 	coordinates := data.Page.Embedded.Tour.Embedded.Coordinates.Items
 	if len(coordinates) == 0 {
 		return nil, fmt.Errorf("no coordinates found in tour data")
@@ -249,7 +249,7 @@ func (c *Converter) jsonToGPX(data *KomootResponse) (*GPX, error) {
 }
 
 // writeGPX writes GPX data to a file
-func (c *Converter) writeGPX(gpx *GPX, filename string) error {
+func (c *GPXConverter) writeGPX(gpx *GPX, filename string) error {
 	file, err := os.Create(filename)
 	if err != nil {
 		return fmt.Errorf("error creating file: %w", err)
@@ -290,12 +290,12 @@ func main() {
 
 	url := flag.Arg(0)
 	config := DefaultConfig()
-	converter := NewConverter(config)
+	converter := NewGPXConverter(config)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := converter.GenerateGPXFromKomoot(ctx, url, output); err != nil {
+	if err := converter.ConvertKomootToGPX(ctx, url, output); err != nil {
 		converter.logger.Fatalf("Error converting tour: %v", err)
 	}
 }
