@@ -6,8 +6,10 @@ Go version of [komootgpx](https://github.com/mfkd/komootgpx).
 
 ## Installation
 
+Ensure you have Go installed, then run:
+
 ```sh
-go install github.com/mfkd/gokomoot@latest
+go install github.com/mfkd/gokomoot
 ```
 
 ## Usage
