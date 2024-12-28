@@ -177,8 +177,8 @@ func (c *Converter) extractJSONFromHTML(htmlContent string) ([]byte, error) {
 	return []byte(jsonStr), nil
 }
 
-// Convert performs the complete conversion process
-func (c *Converter) Convert(ctx context.Context, url, outputPath string) error {
+// GenerateGPXFromKomoot performs the complete conversion process
+func (c *Converter) GenerateGPXFromKomoot(ctx context.Context, url, outputPath string) error {
 	// Download and process the tour data
 	c.logger.Printf("Downloading tour data from %s\n", url)
 	html, err := c.makeHTTPRequest(ctx, url)
@@ -295,7 +295,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := converter.Convert(ctx, url, output); err != nil {
+	if err := converter.GenerateGPXFromKomoot(ctx, url, output); err != nil {
 		converter.logger.Fatalf("Error converting tour: %v", err)
 	}
 }
