@@ -153,30 +153,6 @@ func (c *GPXConverter) makeHTTPRequest(ctx context.Context, url string) (string,
 	return "", fmt.Errorf("all retry attempts failed: %w", lastError)
 }
 
-// extractJSONFromHTML extracts JSON data embedded in the HTML content
-func (c *GPXConverter) extractJSONFromHTML(htmlContent string) ([]byte, error) {
-	startMarker := `kmtBoot.setProps("`
-	endMarker := `");`
-
-	startIdx := strings.Index(htmlContent, startMarker)
-	if startIdx == -1 {
-		return nil, fmt.Errorf("start marker not found in HTML content")
-	}
-	startIdx += len(startMarker)
-
-	endIdx := strings.Index(htmlContent[startIdx:], endMarker)
-	if endIdx == -1 {
-		return nil, fmt.Errorf("end marker not found in HTML content")
-	}
-
-	jsonStr := htmlContent[startIdx : startIdx+endIdx]
-	jsonStr = html.UnescapeString(jsonStr)
-	jsonStr = strings.ReplaceAll(jsonStr, `\\`, `\`)
-	jsonStr = strings.ReplaceAll(jsonStr, `\"`, `"`)
-
-	return []byte(jsonStr), nil
-}
-
 // ConvertKomootToGPX performs the complete conversion process
 func (c *GPXConverter) ConvertKomootToGPX(ctx context.Context, url, outputPath string) error {
 	// Download and process the tour data
@@ -187,7 +163,7 @@ func (c *GPXConverter) ConvertKomootToGPX(ctx context.Context, url, outputPath s
 	}
 
 	c.logger.Println("Extracting JSON data from HTML")
-	jsonData, err := c.extractJSONFromHTML(html)
+	jsonData, err := extractJSONFromHTML(html)
 	if err != nil {
 		return fmt.Errorf("failed to extract JSON data: %w", err)
 	}
@@ -202,7 +178,7 @@ func (c *GPXConverter) ConvertKomootToGPX(ctx context.Context, url, outputPath s
 		return fmt.Errorf("failed to convert to GPX: %w", err)
 	}
 
-	if err := c.writeGPX(gpx, outputPath); err != nil {
+	if err := writeGPX(gpx, outputPath); err != nil {
 		return fmt.Errorf("failed to write GPX file: %w", err)
 	}
 
@@ -248,8 +224,32 @@ func (c *GPXConverter) jsonToGPX(data *KomootResponse) (*GPX, error) {
 	return gpx, nil
 }
 
+// extractJSONFromHTML extracts JSON data embedded in the HTML content
+func extractJSONFromHTML(htmlContent string) ([]byte, error) {
+	startMarker := `kmtBoot.setProps("`
+	endMarker := `");`
+
+	startIdx := strings.Index(htmlContent, startMarker)
+	if startIdx == -1 {
+		return nil, fmt.Errorf("start marker not found in HTML content")
+	}
+	startIdx += len(startMarker)
+
+	endIdx := strings.Index(htmlContent[startIdx:], endMarker)
+	if endIdx == -1 {
+		return nil, fmt.Errorf("end marker not found in HTML content")
+	}
+
+	jsonStr := htmlContent[startIdx : startIdx+endIdx]
+	jsonStr = html.UnescapeString(jsonStr)
+	jsonStr = strings.ReplaceAll(jsonStr, `\\`, `\`)
+	jsonStr = strings.ReplaceAll(jsonStr, `\"`, `"`)
+
+	return []byte(jsonStr), nil
+}
+
 // writeGPX writes GPX data to a file
-func (c *GPXConverter) writeGPX(gpx *GPX, filename string) error {
+func writeGPX(gpx *GPX, filename string) error {
 	file, err := os.Create(filename)
 	if err != nil {
 		return fmt.Errorf("error creating file: %w", err)
