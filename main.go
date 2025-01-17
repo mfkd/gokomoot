@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -270,6 +271,19 @@ func writeGPX(gpx *GPX, filename string) error {
 	return nil
 }
 
+// removeQueryParamFromURL removes query parameters from a URL
+func removeQueryParamFromURL(urlString string) (string, error) {
+	parsedURL, err := url.Parse(urlString)
+	if err != nil {
+		return "", fmt.Errorf("error parsing URL: %w", err)
+	}
+
+	// Remove query parameters
+	parsedURL.RawQuery = ""
+
+	return parsedURL.String(), nil
+}
+
 func main() {
 	var output string
 	flag.StringVar(&output, "o", "", "The GPX file to create")
@@ -288,7 +302,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	url := flag.Arg(0)
+	// Remove query parameters from the URL since they are not needed
+	url, err := removeQueryParamFromURL(flag.Arg(0))
+	if err != nil {
+		log.Fatalf("Error removing query parameters: %v", err)
+	}
+
 	config := DefaultConfig()
 	converter := NewGPXConverter(config)
 
