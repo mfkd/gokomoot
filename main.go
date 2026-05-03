@@ -6,12 +6,12 @@ import (
 	"encoding/xml"
 	"flag"
 	"fmt"
-	"html"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -38,11 +38,17 @@ func DefaultConfig() Configuration {
 
 // GPX represents the root GPX element
 type GPX struct {
-	XMLName xml.Name `xml:"gpx"`
-	Version string   `xml:"version,attr"`
-	Creator string   `xml:"creator,attr"`
-	Name    string   `xml:"name,omitempty"`
-	Tracks  []Track  `xml:"trk"`
+	XMLName  xml.Name  `xml:"gpx"`
+	XMLNS    string    `xml:"xmlns,attr,omitempty"`
+	Version  string    `xml:"version,attr"`
+	Creator  string    `xml:"creator,attr"`
+	Metadata *Metadata `xml:"metadata,omitempty"`
+	Tracks   []Track   `xml:"trk"`
+}
+
+// Metadata represents GPX metadata
+type Metadata struct {
+	Name string `xml:"name,omitempty"`
 }
 
 // Track represents a GPX track
@@ -60,7 +66,7 @@ type Segment struct {
 type Point struct {
 	Lat       float64 `xml:"lat,attr"`
 	Lon       float64 `xml:"lon,attr"`
-	Elevation float64 `xml:"ele,omitempty"`
+	Elevation float64 `xml:"ele"`
 }
 
 // Validate checks if the point coordinates are valid
@@ -81,7 +87,7 @@ type KomootResponse struct {
 			Tour struct {
 				Name     string `json:"name"`
 				Embedded struct {
-					Coordinates struct {
+					Coordinates *struct {
 						Items []struct {
 							Lat float64 `json:"lat"`
 							Lng float64 `json:"lng"`
@@ -115,11 +121,17 @@ func NewGPXConverter(config Configuration) *GPXConverter {
 // makeHTTPRequest makes an HTTP GET request with retries
 func (c *GPXConverter) makeHTTPRequest(ctx context.Context, url string) (string, error) {
 	var lastError error
+	attempts := c.config.MaxRetries
+	if attempts < 1 {
+		attempts = 1
+	}
 
-	for attempt := 0; attempt < c.config.MaxRetries; attempt++ {
+	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
-			c.logger.Printf("Retry attempt %d/%d\n", attempt+1, c.config.MaxRetries)
-			time.Sleep(c.config.RetryInterval)
+			c.logger.Printf("Retry attempt %d/%d\n", attempt+1, attempts)
+			if err := sleepWithContext(ctx, c.config.RetryInterval); err != nil {
+				return "", fmt.Errorf("retry canceled: %w", err)
+			}
 		}
 
 		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -132,19 +144,29 @@ func (c *GPXConverter) makeHTTPRequest(ctx context.Context, url string) (string,
 
 		resp, err := c.client.Do(req)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return "", fmt.Errorf("request canceled: %w", ctxErr)
+			}
 			lastError = fmt.Errorf("error making request: %w", err)
 			continue
 		}
-		defer resp.Body.Close()
 
-		if resp.StatusCode != http.StatusOK {
-			lastError = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		body, readErr := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
+		if readErr != nil {
+			lastError = fmt.Errorf("error reading response body: %w", readErr)
+			continue
+		}
+		if closeErr != nil {
+			lastError = fmt.Errorf("error closing response body: %w", closeErr)
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			lastError = fmt.Errorf("error reading response body: %w", err)
+		if resp.StatusCode != http.StatusOK {
+			lastError = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+			if !shouldRetryStatus(resp.StatusCode) {
+				return "", lastError
+			}
 			continue
 		}
 
@@ -152,6 +174,26 @@ func (c *GPXConverter) makeHTTPRequest(ctx context.Context, url string) (string,
 	}
 
 	return "", fmt.Errorf("all retry attempts failed: %w", lastError)
+}
+
+func shouldRetryStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests || statusCode >= 500
+}
+
+func sleepWithContext(ctx context.Context, duration time.Duration) error {
+	if duration <= 0 {
+		return nil
+	}
+
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // ConvertKomootToGPX performs the complete conversion process
@@ -189,23 +231,31 @@ func (c *GPXConverter) ConvertKomootToGPX(ctx context.Context, url, outputPath s
 
 // jsonToGPX converts JSON data to GPX format
 func (c *GPXConverter) jsonToGPX(data *KomootResponse) (*GPX, error) {
+	if data.Page.Embedded.Tour.Embedded.Coordinates == nil {
+		return nil, fmt.Errorf("coordinates missing in tour data")
+	}
+
+	tourName := data.Page.Embedded.Tour.Name
 	coordinates := data.Page.Embedded.Tour.Embedded.Coordinates.Items
 	if len(coordinates) == 0 {
 		return nil, fmt.Errorf("no coordinates found in tour data")
 	}
 
 	gpx := &GPX{
+		XMLNS:   "http://www.topografix.com/GPX/1/1",
 		Version: "1.1",
 		Creator: c.config.UserAgent,
-		Name:    data.Page.Embedded.Tour.Name,
 		Tracks: []Track{
 			{
-				Name: data.Page.Embedded.Tour.Name,
+				Name: tourName,
 				Segments: []Segment{
 					{Points: make([]Point, 0, len(coordinates))},
 				},
 			},
 		},
+	}
+	if tourName != "" {
+		gpx.Metadata = &Metadata{Name: tourName}
 	}
 
 	for _, item := range coordinates {
@@ -227,45 +277,81 @@ func (c *GPXConverter) jsonToGPX(data *KomootResponse) (*GPX, error) {
 
 // extractJSONFromHTML extracts JSON data embedded in the HTML content
 func extractJSONFromHTML(htmlContent string) ([]byte, error) {
-	startMarker := `kmtBoot.setProps("`
-	endMarker := `");`
+	startMarker := `kmtBoot.setProps(`
 
 	startIdx := strings.Index(htmlContent, startMarker)
 	if startIdx == -1 {
 		return nil, fmt.Errorf("start marker not found in HTML content")
 	}
 	startIdx += len(startMarker)
-
-	endIdx := strings.Index(htmlContent[startIdx:], endMarker)
-	if endIdx == -1 {
-		return nil, fmt.Errorf("end marker not found in HTML content")
+	for startIdx < len(htmlContent) && (htmlContent[startIdx] == ' ' || htmlContent[startIdx] == '\t' || htmlContent[startIdx] == '\n' || htmlContent[startIdx] == '\r') {
+		startIdx++
 	}
 
-	jsonStr := htmlContent[startIdx : startIdx+endIdx]
-	jsonStr = html.UnescapeString(jsonStr)
-	jsonStr = strings.ReplaceAll(jsonStr, `\\`, `\`)
-	jsonStr = strings.ReplaceAll(jsonStr, `\"`, `"`)
+	literal, err := extractJSONStringLiteral(htmlContent[startIdx:])
+	if err != nil {
+		return nil, err
+	}
+
+	var jsonStr string
+	if err := json.Unmarshal([]byte(literal), &jsonStr); err != nil {
+		return nil, fmt.Errorf("failed to decode boot JSON string: %w", err)
+	}
 
 	return []byte(jsonStr), nil
 }
 
-// writeGPX writes GPX data to a file
-func writeGPX(gpx *GPX, filename string) error {
-	file, err := os.Create(filename)
-	if err != nil {
-		return fmt.Errorf("error creating file: %w", err)
+func extractJSONStringLiteral(input string) (string, error) {
+	if input == "" || input[0] != '"' {
+		return "", fmt.Errorf("kmtBoot.setProps argument is not a JSON string literal")
 	}
-	defer file.Close()
+
+	escaped := false
+	for idx := 1; idx < len(input); idx++ {
+		switch {
+		case escaped:
+			escaped = false
+		case input[idx] == '\\':
+			escaped = true
+		case input[idx] == '"':
+			return input[:idx+1], nil
+		}
+	}
+
+	return "", fmt.Errorf("unterminated kmtBoot.setProps JSON string literal")
+}
+
+// writeGPX writes GPX data to a file
+func writeGPX(gpx *GPX, filename string) (err error) {
+	file, err := os.CreateTemp(filepath.Dir(filename), "."+filepath.Base(filename)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("error creating temporary file: %w", err)
+	}
+	tempName := file.Name()
+	defer func() {
+		if err != nil {
+			_ = file.Close()
+			_ = os.Remove(tempName)
+		}
+	}()
 
 	encoder := xml.NewEncoder(file)
 	encoder.Indent("", "  ")
 
-	if _, err := file.WriteString(xml.Header); err != nil {
+	if _, err = file.WriteString(xml.Header); err != nil {
 		return fmt.Errorf("error writing XML header: %w", err)
 	}
 
-	if err := encoder.Encode(gpx); err != nil {
+	if err = encoder.Encode(gpx); err != nil {
 		return fmt.Errorf("error encoding GPX: %w", err)
+	}
+
+	if err = file.Close(); err != nil {
+		return fmt.Errorf("error closing GPX file: %w", err)
+	}
+
+	if err = os.Rename(tempName, filename); err != nil {
+		return fmt.Errorf("error moving GPX file into place: %w", err)
 	}
 
 	return nil
